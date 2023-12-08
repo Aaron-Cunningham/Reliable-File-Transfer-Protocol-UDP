@@ -1,8 +1,7 @@
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.IOException;
-import java.io.ObjectOutputStream;
+import java.io.*;
 import java.net.*;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Scanner;
 
 public class Client {
@@ -169,9 +168,106 @@ public class Client {
 
 
 
-	public void sendFileNormal(int portNumber, InetAddress IPAddress, File file) {
-		exitErr("sendFileNormal is not implemented");
-	} 
+	public void sendFileNormal(int portNumber, InetAddress serverAddress, File file) {
+		DatagramSocket client = null;
+		//Used to store the data been sent
+		String dataSending;
+
+		try {
+			client = new DatagramSocket();
+		} catch (SocketException e) {
+			System.err.println("the socket could not be opened, or the socket could not bind to the specified port " + portNumber);
+			System.exit(1);
+		}
+
+		try {
+			// Sequence number initially set to 0
+			int sequence_number = 0;
+			byte[] incomingData = new byte[1024];
+			// Segment object created to set size of payload, set the sequence number, and set the payload
+			Segment dataSegment = new Segment();
+			BufferedReader br = new BufferedReader(new FileReader(file));
+			while ((dataSending = br.readLine()) != null) {
+				List<String> chunks = chunk(dataSending, 4);
+
+				for (String chunkData : chunks) {
+					//Setting size of the data
+					dataSegment.setSize(chunkData.length());
+					//Setting the payload to be sent (4 bytes)
+					dataSegment.setPayLoad(chunkData);
+					//Updating the sequence number each loop
+					dataSegment.setSq(sequence_number);
+					//Setting the checksum
+					dataSegment.setChecksum(checksum(chunkData, false));
+
+
+					//Created a ByteArrayOutputSteam object
+					ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+					//Created ObjectOutputStream object
+					ObjectOutputStream objectStream = new ObjectOutputStream(outputStream);
+					//Writing the dataSegment to the objectStream
+					objectStream.writeObject(dataSegment);
+
+					byte[] buffer = outputStream.toByteArray();
+					DatagramPacket DpSend = new DatagramPacket(buffer, buffer.length, serverAddress, portNumber);
+
+					//System message with content of the data degment been sent
+					System.out.println("SENDER: Sending segment: sq:" + dataSegment.getSq() + " Size:" + dataSegment.getSize() + " Checksum:" + dataSegment.getChecksum() + " Content:(" + dataSegment.getPayLoad() + ")");
+					System.out.println("SENDER: Waiting for an ack");
+					//Sending the packet to the server
+					client.send(DpSend);
+
+
+					//Changes sequence number between using XOR 1 & 0
+					sequence_number ^= 1;
+
+					DatagramPacket incomingPacket = new DatagramPacket(incomingData, incomingData.length);
+					//receive from the server
+					client.receive(incomingPacket);
+					ByteArrayInputStream in = new ByteArrayInputStream(incomingData);
+					ObjectInputStream is = new ObjectInputStream(in);
+
+					//Code adapted from Server.java
+					try {
+						Segment dataSeg = (Segment) is.readObject();
+						System.out.println("SENDER: ACK sq=" + dataSeg.getSq() + " RECEIVED ");
+						System.out.println("------------------------------------------------");
+						System.out.println("------------------------------------------------");
+					} catch (ClassNotFoundException e) {
+						e.printStackTrace();
+					}
+				}
+				//Closing the socket once loop has finished processing all the bytes
+			}
+			client.close();
+			System.out.println("Closed");
+		} catch (IOException e) {
+			throw new RuntimeException(e);
+		}
+	}
+	private static final List<String> chunk(final String text, final int chunkSize) {
+		// Figure out how many chunks we are going to make.
+		final int textLength = text.length();
+		final int numberOfChunks =
+				textLength % chunkSize == 0
+						? textLength / chunkSize
+						: textLength / chunkSize + 1;
+
+		// Create an array list of just the right size.
+		final ArrayList<String> chunks = new ArrayList<String>(numberOfChunks);
+
+		// Do all the chunking but the last one - here we know that all chunks
+		// are exactly chunkSize long
+		for (int i = 0; i < numberOfChunks - 1; i++) {
+			chunks.add(text.substring(i * chunkSize, (i + 1) * chunkSize));
+		}
+
+		// Add final chunk, which may be shorter than chunkSize, so we use textLength
+		// as the end index
+		chunks.add(text.substring((numberOfChunks - 1) * chunkSize, textLength));
+
+		return chunks;
+	}
 
 
 	public void sendFileWithTimeOut(int portNumber, InetAddress IPAddress, File file, float loss) {
