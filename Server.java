@@ -190,8 +190,122 @@ public class Server {
 
 	}
 
-	public void receiveFileWithAckLost(float loss) {
-		exitErr("receiveFileWithAckLost is not implemented");
+	public void receiveFileWithAckLost(float loss) throws IOException {
+		FileWriter myWriter = new FileWriter(outputFileName);
+		int currentTotal =0;
+		//Byte array buffer for the incoming data from client
+		byte[] incomingData = new byte[1024];
+		Segment dataSeg = new Segment();
+		//Initilises the sent Sq as -1
+		int sentSq = -1;
+		//Initilises the old Sq (Will be updated with current one)
+		int historicSq;
+
+		/* while still receiving segments */
+		while (currentTotal < totalBytes) {
+			DatagramPacket incomingPacket = new DatagramPacket(incomingData, incomingData.length);
+			//receive from the client
+			socket.receive(incomingPacket);
+
+			byte[] data = incomingPacket.getData();
+			ByteArrayInputStream in = new ByteArrayInputStream(data);
+			ObjectInputStream is = new ObjectInputStream(in);
+			// Sets the old SQ to the current SQ before the new one is set
+			historicSq = sentSq;
+
+
+			try {
+				dataSeg = (Segment) is.readObject();
+				System.out.println("SERVER: A Segment with sq "+ dataSeg.getSq()+" is received: ");
+				System.out.println("\tINFO: size "+ dataSeg.getSize() +", checksum "+ dataSeg.getChecksum()+", content ("+dataSeg.getPayLoad()+")" );
+			} catch (ClassNotFoundException e) {
+				e.printStackTrace();
+			}
+			//Sets the updated SQ
+			sentSq = dataSeg.getSq();
+
+			InetAddress IPAddress = incomingPacket.getAddress();
+			int port = incomingPacket.getPort();
+
+			int x = checksum(dataSeg.getPayLoad());
+
+			//If the calculated checksum is same as that of received checksum then send corrosponding ack
+			if(x == dataSeg.getChecksum()) {
+				System.out.println("SERVER: Calculated checksum is " + x + "  VALID");
+				//If runs it means there is no loss(From simulation)
+				if (!isLost(loss)){
+					//Checks if the old sq and new sq are the same which would mean a duplicate
+					if (historicSq == sentSq) {
+
+						System.out.println("SERVER: This Segment is a duplicate -- DETECTED");
+						Segment ackSeg = new Segment();
+						//Sends the ACK
+						sendAck(dataSeg, ackSeg, IPAddress, port);
+						currentTotal = currentTotal + dataSeg.getSize();
+						System.out.println("\t\t>>>>>>> NETWORK: ACK is sent successfully - NOT LOST <<<<<<<<<");
+						System.out.println("------------------------------------------------");
+						System.out.println("------------------------------------------------");
+					} else {
+						//not a duplicate as old and new sq aren't equal to each other
+						Segment ackSeg = new Segment();
+						//Sends the ACK
+						sendAck(dataSeg, ackSeg, IPAddress, port);
+						currentTotal = currentTotal + dataSeg.getSize();
+						System.out.println("\t\t>>>>>>> NETWORK: ACK is sent successfully <<<<<<<<<");
+						System.out.println("------------------------------------------------");
+						System.out.println("------------------------------------------------");
+
+					}
+					//writes the payload
+					myWriter.write(dataSeg.getPayLoad());
+
+				}else if(sentSq==historicSq){
+					//Checks if Current and old Sq match
+					System.out.println("SERVER: This Segment is a duplicate -- DETECTED");
+					System.out.println("\t\t>>>>>>> NETWORK: ACK is LOST <<<<<<<<<");
+					System.out.println("*****************************************");
+				} else{
+					//If old and current Sq are different
+					System.out.println("\t\t>>>>>>> NETWORK: ACK is LOST <<<<<<<<<");
+					System.out.println("*****************************************");
+				}
+
+
+				//If the checksum from client is invalid, will run
+			} else {
+				System.out.println("SERVER: Calculated checksum is " + x + "  INVALID");
+				System.out.println("SERVER: Not sending any ACK ");
+				System.out.println("*************************** ");
+			}
+
+		}
+
+		System.out.println("SERVER: File copying complete\n");
+		myWriter.close();
+
 
 	}
+	//helper method to send ACK
+	public void sendAck(Segment dataSeg, Segment ackSeg, InetAddress IPAddress, int port ){
+		try{
+			/* Prepare the Ack segment */
+			ackSeg.setSq(dataSeg.getSq());
+			ackSeg.setType(SegmentType.Ack);
+			System.out.println("SERVER: Sending an ACK with sq " + ackSeg.getSq());
+
+			ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+			ObjectOutputStream os = new ObjectOutputStream(outputStream);
+			os.writeObject(ackSeg);
+			byte[] dataAck = outputStream.toByteArray();
+			DatagramPacket replyPacket = new DatagramPacket(dataAck, dataAck.length, IPAddress, port);
+			/* Send the Ack segment */
+			socket.send(replyPacket);
+
+		} catch (IOException e) {
+			throw new RuntimeException(e);
+		}
+
+
+	}
+
 }
