@@ -270,9 +270,175 @@ public class Client {
 	}
 
 
-	public void sendFileWithTimeOut(int portNumber, InetAddress IPAddress, File file, float loss) {
-		exitErr("sendFileWithTimeOut is not implemented");
-	} 
+	public void sendFileWithTimeOut(int portNumber, InetAddress IPAddress, File file, float loss) throws IOException {
+		//Resets the colour of text in console
+		String RESET = "\033[0m";
+		//sets colour of text to red
+		String ANSI_RED = "\u001B[31m";
+		DatagramSocket client = null;
+		// Sequence number initially set to 0
+		int sequence_number = 0;
+		//Byte array buffer for the incoming data from server
+		byte[] incomingData = new byte[1024];
+		// Segment object created to set size of payload, set the sequence number, and set the payload
+		Segment dataSegment = new Segment();
+		//Used to store the data been sent
+		String dataSending;
+		//Used to count the amount of segments sent, initially set to 0
+		int segments = 0;
+
+		try {
+			//creates a client socket
+			client = new DatagramSocket();
+		} catch (SocketException e) {
+			//Handles exception if socket couldn't be opened
+			System.err.println("the socket could not be opened, or the socket could not bind to the specified port " + portNumber);
+			System.exit(1);
+		}
+
+		BufferedReader br = null;
+		try {
+			//reads the file
+			br = new BufferedReader(new FileReader(file));
+		} catch (FileNotFoundException e) {
+			//Handles exception if file isn't found
+			System.err.println("File not found");
+			System.exit(1);
+		}
+
+		//Reads in a line of text from the file and assigns it to data
+		while ((dataSending = br.readLine()) != null) {
+			//sets the chunk size for the data(4 Bytes)
+			List<String> chunks = chunk(dataSending, 4);
+			for (String chunkData : chunks) {
+				// Setting size of the data
+				dataSegment.setSize(chunkData.length());
+				// Setting the payload to be sent (4 bytes)
+				dataSegment.setPayLoad(chunkData);
+				// Updating the sequence number each loop
+				dataSegment.setSq(sequence_number);
+				// Setting the new checksum each loop
+				dataSegment.setChecksum(checksum(chunkData, isCorrupted(loss)));
+
+				// Created a Byte array outputSteam object
+				ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+				// Created ObjectOutputStream object
+				ObjectOutputStream objectStream = new ObjectOutputStream(outputStream);
+				// Writing the dataSegment to the objectStream
+				objectStream.writeObject(dataSegment);
+
+				byte[] data = outputStream.toByteArray();
+				DatagramPacket DpSend = new DatagramPacket(data, data.length, IPAddress, portNumber);
+
+				// System message with content of the data degment been sent
+				System.out.println("------------------------------------------------");
+				System.out.println("SENDER: Sending segment: sq:" + dataSegment.getSq() + " Size:" + dataSegment.getSize() + " Checksum:" + dataSegment.getChecksum() + " Content:(" + dataSegment.getPayLoad() + ")");
+				System.err.println("SENDER: Waiting for an ack");
+
+				sequence_number ^= 1;
+				//Setting the time before timeout occurs (1 second)
+				client.setSoTimeout(1000);
+				//Sending the data to the server
+				client.send(DpSend);
+				//Resets the retries to 0 for each segment
+				int retries = 0;
+				//Initially setting the receivedAck to false
+				boolean receivedAck = false;
+				//While loop that runs until receivedAck is true
+				while(receivedAck==false) {
+					try {
+
+						//Code adapted from Server.java
+						DatagramPacket incomingPacket = new DatagramPacket(incomingData, incomingData.length);
+						// receive from the server
+						client.receive(incomingPacket);
+						//Byte array stream that reads data from incomingData
+						ByteArrayInputStream in = new ByteArrayInputStream(incomingData);
+						ObjectInputStream is = new ObjectInputStream(in);
+
+						try {
+							//Code adapted from Server.java
+							Segment dataSeg = (Segment) is.readObject();
+							System.out.println(RESET + "SENDER: ACK sq = " + dataSeg.getSq() + " RECEIVED ");
+							System.out.println("------------------------------------------------");
+							//Converts receivedAck to true once a server ACK has been received (breaks out of loop)
+							receivedAck = true;
+							//Keeps count of the segments sent, adds 1
+							segments++;
+						} catch (ClassNotFoundException e) {
+							e.printStackTrace();
+						}
+
+						//Catches this exception when timeout occurs
+					} catch (SocketTimeoutException e) {
+						if (retries <= RETRY_LIMIT) {
+							//If timeout happens with corruption simulation
+							if(dataSegment.getChecksum() == 0){
+								System.out.println(ANSI_RED + "------------------------------------------------");
+								System.err.println("SENDER: Sending segment: sq:" + dataSegment.getSq() + " Size:" + dataSegment.getSize() + " Checksum:" + dataSegment.getChecksum() + " Content:(" + dataSegment.getPayLoad() + ")");
+								System.err.println(">>>>>>>Network ERROR: segment checksum is corrupted<<<<<<<");
+								//Resends the data segment with helper method
+								resendSegment(dataSegment, IPAddress, portNumber, client, chunkData, loss, retries);
+								//Keeping count of the amount of retries (MAX = 4)
+								retries++;
+								//Keeps count of the segments sent, adds 1
+								segments++;
+							}else{
+								//If timeout occurs without corruption
+								System.out.println(ANSI_RED + "------------------------------------------------");
+								System.err.println("SENDER: Sending segment: sq:" + dataSegment.getSq() + " Size:" + dataSegment.getSize() + " Checksum:" + dataSegment.getChecksum() + " Content:(" + dataSegment.getPayLoad() + ")");
+								System.err.println(">>>>>>>Network ERROR: HAVEN'T RECEIVED ACK<<<<<<<");
+								//Resends the data segment with helper method
+								resendSegment(dataSegment, IPAddress, portNumber, client, chunkData, loss, retries);
+								//Keeping count of the amount of retries (MAX = 4)
+								retries++;
+								//Keeps count of the segments sent, adds 1
+								segments++;
+							}
+						}else{
+							//If retries is exceeded, will exit
+							System.out.println(RESET + "No more retries left, exciting the program");
+							System.exit(1);
+						}
+
+					}
+				}
+			}
+		}
+		System.out.println("Total segments sent: " + segments);
+		System.out.println("Socket is now closed");
+		//Closing the socket
+		client.close();
+	}
+
+	//Helper method to resend segments
+	public void resendSegment(Segment dataSegment, InetAddress IPAddress, int portNumber, DatagramSocket client, String chunkData, float loss, int retries){
+		try{
+			//Updating the checksum again
+			dataSegment.setChecksum(checksum(chunkData, isCorrupted(loss)));
+			// Created a Byte array outputSteam object for updated data
+			OutputStream outputStream = new ByteArrayOutputStream();
+			// Created ObjectOutputStream object
+			ObjectOutputStream objectStream = new ObjectOutputStream(outputStream);
+			//Writing the updated data to the object stream
+			objectStream.writeObject(dataSegment);
+			byte[] data = ((ByteArrayOutputStream) outputStream).toByteArray();
+			DatagramPacket DpSend = new DatagramPacket(data, data.length, IPAddress, portNumber);
+
+			System.out.println();
+			System.out.println();
+			System.out.println("SENDER: Waiting for an ack");
+			System.err.println("SENDER: TIMEOUT ALERT: Re-sending the same segment again, current retry: " + retries);
+			System.err.println("SENDER: Sending segment: sq:" + dataSegment.getSq() + " Size:" + dataSegment.getSize() + " Checksum:" + dataSegment.getChecksum() + " Content:(" + dataSegment.getPayLoad() + ")");
+			System.err.println("SENDER: Waiting for an ack");
 
 
+			//Sending the updated data to the server
+			client.send(DpSend);
+
+
+		} catch (IOException e) {
+			throw new RuntimeException(e);
+		}
+	}
 }
